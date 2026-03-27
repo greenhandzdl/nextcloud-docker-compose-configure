@@ -1,0 +1,39 @@
+{
+    # 证书申请邮箱
+    email {$ACME_EMAIL}
+}
+
+# 监听 .env 中定义的域名和端口
+{$YOUR_DOMAIN}:{$HTTPS_PORT} {
+    # 开启 HTTPS 并使用 Cloudflare DNS 质询
+    tls {
+        dns cloudflare {$CLOUDFLARE_API_TOKEN}
+    }
+
+    encode gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000;"
+        # 动态读取域名和端口，允许在线 Office 嵌入
+        Content-Security-Policy "frame-ancestors 'self' https://{$YOUR_DOMAIN}:{$HTTPS_PORT};"
+        X-Robots-Tag "none"
+        -Server
+    }
+    
+    # 修复 Nextcloud 客户端同步所需的重定向
+    redir /.well-known/carddav /remote.php/dav 301
+    redir /.well-known/caldav /remote.php/dav 301
+
+    # 在线 Office (Collabora) 的路由规则
+    @collabora {
+        path /hosting/discovery
+        path /hosting/capabilities
+        path /lool/*
+    }
+    reverse_proxy @collabora collabora:9980
+
+    # Nextcloud 核心路由 (使用官方推荐的 php_fastcgi 模块)
+    php_fastcgi nextcloud-app:9000
+    root * /var/www/html
+    file_server
+}

@@ -1,26 +1,23 @@
-# 移除了顶部的 version 属性，以遵循最新的 Docker Compose 规范
 services:
-  # Caddy 服务 (Web 服务器/反向代理)
+  # 1. Caddy (Web 服务器/反向代理)
   caddy:
-    # 修正了镜像名称，使用一个稳定且公开可用的版本
-    image: lucaslorentz/caddy-docker-proxy:2.8.4-cloudflare
+    build: ./caddy
     container_name: nextcloud-caddy
     restart: always
     env_file: .env
     ports:
-      - "10443:443"
-      - "10080:80"
+      # 动态读取并映射 .env 中的端口
+      - "${HTTPS_PORT}:${HTTPS_PORT}"
     networks:
       - nextcloud-network
     volumes:
       - ./data/caddy/data:/data
-      # 允许 Caddy 读取其他容器的标签以自动生成配置
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - CADDY_INGRESS_NETWORKS=nextcloud-network
-      - CADDY_DOCKER_POLL_INTERVAL=30s
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+    depends_on:
+      - nextcloud-app
+      - collabora
       
-  # Nextcloud 应用服务 (FPM)
+  # 2. Nextcloud (核心应用 FPM)
   nextcloud-app:
     image: nextcloud:fpm-alpine
     container_name: nextcloud-app
@@ -34,6 +31,11 @@ services:
       - POSTGRES_HOST=db
       - REDIS_HOST=redis
       - NEXTCLOUD_TRUSTED_PROXIES=caddy
+      # --- 关键修复：防止非标准端口导致重定向失败 ---
+      - OVERWRITEHOST=${YOUR_DOMAIN}:${HTTPS_PORT}
+      - OVERWRITEPROTOCOL=https
+      - OVERWRITECLIURL=https://${YOUR_DOMAIN}:${HTTPS_PORT}
+      # ----------------------------------------------
       - ELASTICSEARCH_HOST=elasticsearch
       - ELASTICSEARCH_PORT=9200
       - ANTIVIRUS_HOST=clamav
@@ -43,20 +45,8 @@ services:
       - redis
       - elasticsearch
       - clamav
-    labels:
-      # --- Caddy 自动配置 ---
-      caddy: "${YOUR_DOMAIN}:10443"
-      caddy.tls: "${ACME_EMAIL}"
-      caddy.tls.dns: "cloudflare ${CLOUDFLARE_API_TOKEN}"
-      caddy.reverse_proxy: "{{upstreams 9000}}"
-      
-      # Collabora 的特殊处理规则
-      caddy.handle.order: "first"
-      caddy.handle.1: "@collabora path /hosting/discovery /hosting/capabilities /lool/*"
-      caddy.handle.2: "reverse_proxy @collabora http://collabora:9980"
-      caddy.handle.3: "route"
 
-  # Collabora Online (Nextcloud Office) 服务
+  # 3. Collabora (在线 Office)
   collabora:
     image: collabora/code:latest
     container_name: nextcloud-collabora
@@ -64,12 +54,12 @@ services:
     networks:
       - nextcloud-network
     environment:
-      - domain=${YOUR_DOMAIN}
+      - domain=nextcloud-app
       - DONT_GEN_SSL_CERT="true"
     cap_add:
       - MKNOD
 
-  # Elasticsearch (全文搜索) 服务
+  # 4. Elasticsearch (全文搜索后端)
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.5.3
     container_name: nextcloud-elasticsearch
@@ -83,7 +73,7 @@ services:
       - xpack.security.enabled=false
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
 
-  # Imaginary (图像预览生成) 服务
+  # 5. Imaginary (高性能图片预览)
   imaginary:
     image: nextcloud/aio-imaginary:latest
     container_name: nextcloud-imaginary
@@ -94,7 +84,7 @@ services:
       - "PORT=9000"
       - "ADDRESS=0.0.0.0"
 
-  # ClamAV (病毒扫描) 服务
+  # 6. ClamAV (防病毒扫描)
   clamav:
     image: clamav/clamav:latest
     container_name: nextcloud-clamav
@@ -104,7 +94,7 @@ services:
     volumes:
       - ./data/clamav:/var/lib/clamav
       
-  # Cron (后台任务) 服务
+  # 7. Cron (后台定时任务)
   cron:
     image: nextcloud:fpm-alpine
     container_name: nextcloud-cron
@@ -117,7 +107,7 @@ services:
     depends_on:
       - nextcloud-app
 
-  # PostgreSQL 数据库服务
+  # 8. PostgreSQL (数据库)
   db:
     image: postgres:alpine
     container_name: nextcloud-db
@@ -128,7 +118,7 @@ services:
     volumes:
       - ./data/db:/var/lib/postgresql/data
 
-  # Redis 缓存服务
+  # 9. Redis (内存缓存)
   redis:
     image: redis:alpine
     container_name: nextcloud-redis
