@@ -3,23 +3,20 @@ version: "3.9"
 services:
   # Caddy 服务 (Web 服务器/反向代理)
   caddy:
-    # 使用预编译的、包含 Cloudflare 插件的镜像
     image: lucaslorentz/caddy-docker-proxy:ci-cloudflare
     container_name: nextcloud-caddy
     restart: always
     env_file: .env
     ports:
-      # 将宿主机的 10443 端口映射到容器的 443 端口 (HTTPS)
       - "10443:443"
-      # 将宿主机的 10080 端口映射到容器的 80 端口 (HTTP)
       - "10080:80"
     networks:
       - nextcloud-network
     volumes:
-      # Caddyfile 将通过 label 自动生成，此处仅持久化证书和数据
       - ./data/caddy/data:/data
+      # 挂载 docker.sock 以便 caddy 能够读取其他容器的 labels
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      # 核心配置，告诉 caddy-docker-proxy 如何工作
       - CADDY_INGRESS_NETWORKS=nextcloud-network
       - CADDY_DOCKER_POLL_INTERVAL=30s
       
@@ -37,10 +34,8 @@ services:
       - POSTGRES_HOST=db
       - REDIS_HOST=redis
       - NEXTCLOUD_TRUSTED_PROXIES=caddy
-      # 连接全文搜索服务
       - ELASTICSEARCH_HOST=elasticsearch
       - ELASTICSEARCH_PORT=9200
-      # 连接病毒扫描服务
       - ANTIVIRUS_HOST=clamav
       - ANTIVIRUS_PORT=3310
     depends_on:
@@ -49,20 +44,22 @@ services:
       - elasticsearch
       - clamav
     labels:
-      # --- Caddy 自动配置 ---
+      # --- Caddy 自动配置 (已修正) ---
+      # 主站点地址
       caddy: "${YOUR_DOMAIN}:10443"
-      caddy.reverse_proxy: "{{upstreams 9000}}"
+      # TLS 配置
       caddy.tls: "${ACME_EMAIL}"
       caddy.tls.dns: "cloudflare ${CLOUDFLARE_API_TOKEN}"
-      caddy.handle:
-        - "@collabora path /hosting/discovery /hosting/capabilities /lool/*"
-        - "reverse_proxy @collabora http://collabora:9980"
-        - "route"
-      caddy.handle.route.order: "first"
-      caddy.handle_path:
-        - "uri strip_prefix /apps/richdocumentscode"
-        - "reverse_proxy http://collabora:9980"
-      caddy.handle_path.order: "last"
+      
+      # 默认行为：将所有流量转发到 Nextcloud FPM
+      caddy.reverse_proxy: "{{upstreams 9000}}"
+      
+      # Collabora 的特殊处理规则
+      # order: first 确保这个 handle 块在默认的 reverse_proxy 之前被处理
+      caddy.handle.order: "first"
+      caddy.handle.1: "@collabora path /hosting/discovery /hosting/capabilities /lool/*"
+      caddy.handle.2: "reverse_proxy @collabora http://collabora:9980"
+      caddy.handle.3: "route"
 
   # Collabora Online (Nextcloud Office) 服务
   collabora:
@@ -89,7 +86,7 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m" # 限制内存使用
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
 
   # Imaginary (图像预览生成) 服务
   imaginary:
