@@ -1,9 +1,9 @@
-version: "3.9"
-
+# 移除了顶部的 version 属性，以遵循最新的 Docker Compose 规范
 services:
   # Caddy 服务 (Web 服务器/反向代理)
   caddy:
-    image: lucaslorentz/caddy-docker-proxy:ci-cloudflare
+    # 修正了镜像名称，使用一个稳定且公开可用的版本
+    image: lucaslorentz/caddy-docker-proxy:2.8.4-cloudflare
     container_name: nextcloud-caddy
     restart: always
     env_file: .env
@@ -14,7 +14,7 @@ services:
       - nextcloud-network
     volumes:
       - ./data/caddy/data:/data
-      # 挂载 docker.sock 以便 caddy 能够读取其他容器的 labels
+      # 允许 Caddy 读取其他容器的标签以自动生成配置
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - CADDY_INGRESS_NETWORKS=nextcloud-network
@@ -44,18 +44,13 @@ services:
       - elasticsearch
       - clamav
     labels:
-      # --- Caddy 自动配置 (已修正) ---
-      # 主站点地址
+      # --- Caddy 自动配置 ---
       caddy: "${YOUR_DOMAIN}:10443"
-      # TLS 配置
       caddy.tls: "${ACME_EMAIL}"
       caddy.tls.dns: "cloudflare ${CLOUDFLARE_API_TOKEN}"
-      
-      # 默认行为：将所有流量转发到 Nextcloud FPM
       caddy.reverse_proxy: "{{upstreams 9000}}"
       
       # Collabora 的特殊处理规则
-      # order: first 确保这个 handle 块在默认的 reverse_proxy 之前被处理
       caddy.handle.order: "first"
       caddy.handle.1: "@collabora path /hosting/discovery /hosting/capabilities /lool/*"
       caddy.handle.2: "reverse_proxy @collabora http://collabora:9980"
