@@ -1,0 +1,149 @@
+version: "3.9"
+
+services:
+  # Caddy 服务 (Web 服务器/反向代理)
+  caddy:
+    # 使用预编译的、包含 Cloudflare 插件的镜像
+    image: lucaslorentz/caddy-docker-proxy:ci-cloudflare
+    container_name: nextcloud-caddy
+    restart: always
+    env_file: .env
+    ports:
+      # 将宿主机的 10443 端口映射到容器的 443 端口 (HTTPS)
+      - "10443:443"
+      # 将宿主机的 10080 端口映射到容器的 80 端口 (HTTP)
+      - "10080:80"
+    networks:
+      - nextcloud-network
+    volumes:
+      # Caddyfile 将通过 label 自动生成，此处仅持久化证书和数据
+      - ./data/caddy/data:/data
+    environment:
+      # 核心配置，告诉 caddy-docker-proxy 如何工作
+      - CADDY_INGRESS_NETWORKS=nextcloud-network
+      - CADDY_DOCKER_POLL_INTERVAL=30s
+      
+  # Nextcloud 应用服务 (FPM)
+  nextcloud-app:
+    image: nextcloud:fpm-alpine
+    container_name: nextcloud-app
+    restart: always
+    env_file: .env
+    networks:
+      - nextcloud-network
+    volumes:
+      - ./data/nextcloud/html:/var/www/html
+    environment:
+      - POSTGRES_HOST=db
+      - REDIS_HOST=redis
+      - NEXTCLOUD_TRUSTED_PROXIES=caddy
+      # 连接全文搜索服务
+      - ELASTICSEARCH_HOST=elasticsearch
+      - ELASTICSEARCH_PORT=9200
+      # 连接病毒扫描服务
+      - ANTIVIRUS_HOST=clamav
+      - ANTIVIRUS_PORT=3310
+    depends_on:
+      - db
+      - redis
+      - elasticsearch
+      - clamav
+    labels:
+      # --- Caddy 自动配置 ---
+      caddy: "${YOUR_DOMAIN}:10443"
+      caddy.reverse_proxy: "{{upstreams 9000}}"
+      caddy.tls: "${ACME_EMAIL}"
+      caddy.tls.dns: "cloudflare ${CLOUDFLARE_API_TOKEN}"
+      caddy.handle:
+        - "@collabora path /hosting/discovery /hosting/capabilities /lool/*"
+        - "reverse_proxy @collabora http://collabora:9980"
+        - "route"
+      caddy.handle.route.order: "first"
+      caddy.handle_path:
+        - "uri strip_prefix /apps/richdocumentscode"
+        - "reverse_proxy http://collabora:9980"
+      caddy.handle_path.order: "last"
+
+  # Collabora Online (Nextcloud Office) 服务
+  collabora:
+    image: collabora/code:latest
+    container_name: nextcloud-collabora
+    restart: always
+    networks:
+      - nextcloud-network
+    environment:
+      - domain=${YOUR_DOMAIN}
+      - DONT_GEN_SSL_CERT="true"
+    cap_add:
+      - MKNOD
+
+  # Elasticsearch (全文搜索) 服务
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.5.3
+    container_name: nextcloud-elasticsearch
+    restart: always
+    networks:
+      - nextcloud-network
+    volumes:
+      - ./data/elasticsearch:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m" # 限制内存使用
+
+  # Imaginary (图像预览生成) 服务
+  imaginary:
+    image: nextcloud/aio-imaginary:latest
+    container_name: nextcloud-imaginary
+    restart: always
+    networks:
+      - nextcloud-network
+    environment:
+      - "PORT=9000"
+      - "ADDRESS=0.0.0.0"
+
+  # ClamAV (病毒扫描) 服务
+  clamav:
+    image: clamav/clamav:latest
+    container_name: nextcloud-clamav
+    restart: always
+    networks:
+      - nextcloud-network
+    volumes:
+      - ./data/clamav:/var/lib/clamav
+      
+  # Cron (后台任务) 服务
+  cron:
+    image: nextcloud:fpm-alpine
+    container_name: nextcloud-cron
+    restart: always
+    networks:
+      - nextcloud-network
+    volumes:
+      - ./data/nextcloud/html:/var/www/html
+    entrypoint: /bin/sh -c 'while true; do su -s /bin/sh www-data -c "php /var/www/html/cron.php"; sleep 900; done'
+    depends_on:
+      - nextcloud-app
+
+  # PostgreSQL 数据库服务
+  db:
+    image: postgres:alpine
+    container_name: nextcloud-db
+    restart: always
+    env_file: .env
+    networks:
+      - nextcloud-network
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+
+  # Redis 缓存服务
+  redis:
+    image: redis:alpine
+    container_name: nextcloud-redis
+    restart: always
+    networks:
+      - nextcloud-network
+
+networks:
+  nextcloud-network:
+    driver: bridge
